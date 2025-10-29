@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>MACEHUALLI - La Rebelión</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            display: flex; justify-content: center; align-items: center;
+            min-height: 100vh; font-family: 'Courier New', monospace;
+        }
+        #gameContainer { position: relative; box-shadow: 0 0 40px rgba(0,0,0,0.8); }
+        canvas {
+            display: block; border: 4px solid #d4af37;
+            image-rendering: pixelated; image-rendering: crisp-edges;
+        }
+        #hud {
+            position: absolute; top: 0; left: 0; width: 100%; height: 80px;
+            background: rgba(44,62,80,0.95); color: white; padding: 15px 20px;
+            display: none; justify-content: space-between; align-items: center;
+            border-bottom: 3px solid #d4af37; pointer-events: none;
+        }
+        #hud.active { display:flex; }
+        .hud-section { display:flex; align-items:center; gap:15px; }
+        .hearts { display:flex; gap:8px; }
+        .heart {
+            width:20px; height:20px; background:#e74c3c; transform:rotate(45deg); position:relative;
+        }
+        .heart::before,.heart::after { content:''; width:20px; height:20px; background:#e74c3c; border-radius:50%; position:absolute; }
+        .heart::before { left:-10px; } .heart::after { top:-10px; }
+        .score { font-size:20px; font-weight:bold; color:#d4af37; }
+        .level { font-size:18px; color:#ecf0f1; }
+
+    </style>
+</head>
+
+<script src="juego.js"></script>
+
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas" width="640" height="960"></canvas>
+        <div id="hud">
+            <div class="hud-section">
+                <div class="hearts" id="hearts">
+                    <div class="heart"></div>
+                    <div class="heart"></div>
+                    <div class="heart"></div>
+                </div>
+            </div>
+            <div class="hud-section">
+                <div class="level">NIVEL <span id="levelNum">1</span></div>
+            </div>
+            <div class="hud-section">
+                <div class="score">PUNTOS: <span id="score">0</span></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+
+    // Estados del juego
+    const GAME_STATES = {
+        MENU: 'menu',
+        SCORES: 'scores',
+        PLAYING: 'playing',
+        GAME_OVER: 'gameover',
+        VICTORY: 'victory',
+        TRANSITION: 'transition'
+    };
+    let gameState = GAME_STATES.MENU;
+
+    // Config
+    const GRAVITY = 0.5;
+    const JUMP_FORCE = -18;
+    const MOVE_ACCELERATION = 1.0;
+    const MAX_SPEED = 6;
+    const FRICTION = 0.85;
+
+    // Estado global
+    let score = 0;
+    let level = 1;
+    let lives = 3;
+    let transitionTimer = 0;
+    let highScore = parseInt(localStorage.getItem('macehualli_highscore')) || 0;
+
+    const keys = {};
+    let mouseX = canvas.width/2;
+    let mouseY = canvas.height/2;
+
+    let menuButtons = [];
+    let gameOverButtons = [];
+    let scoresButtons = [];
+
+    let player = {
+        x: 300, y: 800, width: 32, height: 64,
+        velocityX: 0, velocityY: 0, isGrounded: false, facingRight: true,
+        immune: false, damageMultiplier: 1
+    };
+
+    const platforms = [
+        { x: 0, y: 920, width: 640, height: 40, color: '#2ECC71' },
+        { x: 50, y: 800, width: 120, height: 12, color: '#8B4513' },
+        { x: 470, y: 700, width: 120, height: 12, color: '#8B4513' },
+        { x: 200, y: 600, width: 140, height: 12, color: '#8B4513' },
+        { x: 450, y: 500, width: 130, height: 12, color: '#8B4513' },
+        { x: 100, y: 400, width: 150, height: 12, color: '#8B4513' },
+        { x: 400, y: 300, width: 120, height: 12, color: '#8B4513' },
+        { x: 150, y: 200, width: 140, height: 12, color: '#8B4513' },
+        { x: 450, y: 100, width: 140, height: 12, color: '#8B4513' }
+    ];
+
+    // Enemigos / orbe / boss
+    let enemies = [];
+    let orb = {};
+    let projectiles = [];
+    let boss = null;
+    let bossProjectiles = [];
+    let bossPhase = 1;
+
+    // Power-ups
+    let powerUps = []; // objetos {x,y,width,height,type}
+    // types: 'blue' (immune), 'red' (life), 'yellow' (x2 daño)
+
+    // Inicializar botones del menú (ahora incluye Ver Scores)
+    function initMenuButtons() {
+        menuButtons = [
+            {
+                x: canvas.width/2 - 100,
+                y: canvas.height/2 + 50,
+                width: 200, height: 50,
+                text: 'JUGAR', action: startGame
+            },
+            {
+                x: canvas.width/2 - 100,
+                y: canvas.height/2 + 120,
+                width: 200, height: 50,
+                text: 'VER SCORES',
+                action: () => { gameState = GAME_STATES.SCORES; }
+            }
+        ];
+    }
+
+    function initScoresButtons() {
+        scoresButtons = [
+            {
+                x: canvas.width/2 - 100,
+                y: canvas.height - 130,
+                width: 200, height: 50,
+                text: 'VOLVER', action: () => { gameState = GAME_STATES.MENU; }
+            }
+        ];
+    }
+
+    function initGameOverButtons() {
+        gameOverButtons = [
+            {
+                x: canvas.width/2 - 120,
+                y: canvas.height/2 + 150,
+                width: 240, height: 50,
+                text: 'JUGAR DE NUEVO',
+                action: () => { resetGame(); startGame(); }
+            },
+            {
+                x: canvas.width/2 - 100,
+                y: canvas.height/2 + 220,
+                width: 200, height: 50,
+                text: 'MENÚ',
+                action: () => { resetGame(); gameState = GAME_STATES.MENU; }
+            }
+        ];
+    }
+
+    // Inicializar/Resetear juego
+    function resetGame() {
+        score = 0;
+        level = 1;
+        lives = 3;
+        transitionTimer = 0;
+        player = {
+            x: 300, y: 800, width: 32, height: 64,
+            velocityX: 0, velocityY: 0, isGrounded: false, facingRight: true,
+            immune: false, damageMultiplier: 1
+        };
+
+        enemies = [
+            { x: 480, y: 668, width: 24, height: 32, velocityX: 2, minX: 470, maxX: 570, alive: true },
+            { x: 210, y: 568, width: 24, height: 32, velocityX: -2, minX: 200, maxX: 320, alive: true },
+            { x: 110, y: 368, width: 24, height: 32, velocityX: 2, minX: 100, maxX: 230, alive: true }
+        ];
+
+        orb = { x: 490, y: 60, width: 24, height: 24, collected: false, pulseTimer: 0 };
+
+        projectiles = [];
+        boss = null;
+        bossProjectiles = [];
+        bossPhase = 1;
+
+        powerUps = [];
+        // spawn power-up azul (inmunidad) en nivel 1
+        powerUps.push({ x: 300, y: 720, width: 22, height: 22, type: 'blue', pulse: 0 });
+
+        updateScore();
+        updateLives();
+        document.getElementById('levelNum').textContent = '1';
+    }
+
+    function startGame() {
+        gameState = GAME_STATES.PLAYING;
+        document.getElementById('hud').classList.add('active');
+    }
+
+    // Event listeners
+    window.addEventListener('keydown', (e) => {
+        keys[e.key.toLowerCase()] = true;
+        if (e.key === ' ') {
+            e.preventDefault();
+            if (gameState === GAME_STATES.PLAYING && player.isGrounded) {
+                player.velocityY = JUMP_FORCE;
+                player.isGrounded = false;
+            }
+        }
+    });
+    window.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
+
+    canvas.addEventListener('mousemove', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        mouseX = e.clientX - rect.left;
+        mouseY = e.clientY - rect.top;
+    });
+
+    canvas.addEventListener('click', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        const clickY = e.clientY - rect.top;
+
+        // Botones según estado
+        if (gameState === GAME_STATES.MENU) {
+            for (let btn of menuButtons) if (isPointInRect(clickX, clickY, btn)) { btn.action(); return; }
+        } else if (gameState === GAME_STATES.SCORES) {
+            for (let btn of scoresButtons) if (isPointInRect(clickX, clickY, btn)) { btn.action(); return; }
+        } else if (gameState === GAME_STATES.GAME_OVER || gameState === GAME_STATES.VICTORY) {
+            for (let btn of gameOverButtons) if (isPointInRect(clickX, clickY, btn)) { btn.action(); return; }
+        } else if (gameState === GAME_STATES.PLAYING) {
+            shootProjectile();
+        }
+    });
+
+    function isPointInRect(x, y, rect) {
+        return x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
+    }
+
+    // Juego: disparo
+    function shootProjectile() {
+        const centerX = player.x + player.width/2;
+        const centerY = player.y + player.height/2;
+        const dx = mouseX - centerX;
+        const dy = mouseY - centerY;
+        const distance = Math.sqrt(dx*dx + dy*dy);
+        if (distance === 0) return;
+        const speed = 12;
+        const velocityX = (dx/distance)*speed;
+        const velocityY = (dy/distance)*speed;
+        projectiles.push({ x: centerX-6, y: centerY-6, width:12, height:12, velocityX, velocityY });
+    }
+
+    // Actualizar jugador
+    function updatePlayer() {
+        if (keys['a']) { player.velocityX -= MOVE_ACCELERATION; player.facingRight = false; }
+        if (keys['d']) { player.velocityX += MOVE_ACCELERATION; player.facingRight = true; }
+
+        player.velocityX = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, player.velocityX));
+        player.velocityX *= FRICTION;
+        player.velocityY += GRAVITY;
+
+        player.x += player.velocityX;
+        player.y += player.velocityY;
+
+        if (player.x < 0) player.x = 0;
+        if (player.x + player.width > canvas.width) player.x = canvas.width - player.width;
+
+        player.isGrounded = false;
+
+        for (let platform of platforms) {
+            if (player.x < platform.x + platform.width &&
+                player.x + player.width > platform.x &&
+                player.y < platform.y + platform.height &&
+                player.y + player.height > platform.y) {
+
+                if (player.velocityY > 0 && player.y + player.height - player.velocityY <= platform.y + 5) {
+                    player.y = platform.y - player.height;
+                    player.velocityY = 0;
+                    player.isGrounded = true;
+                }
+            }
+        }
+
+        // colisión orb nivel 1
+        if (level === 1 && !orb.collected && checkCollision(player, orb)) {
+            orb.collected = true;
+            score += 500;
+            updateScore();
+            startLevelTransition();
+        }
+
+        // colisión con powerUps
+        for (let i = powerUps.length - 1; i >= 0; i--) {
+            const p = powerUps[i];
+            if (checkCollision(player, p)) {
+                applyPowerUp(p);
+                powerUps.splice(i, 1);
+            }
+        }
+
+        if (player.y > canvas.height + 100) {
+            loseLife();
+        }
+    }
+
+    function applyPowerUp(p) {
+        if (p.type === 'blue') {
+            player.immune = true;
+            // aura temporizada
+            setTimeout(() => { player.immune = false; }, 5000);
+        } else if (p.type === 'red') {
+            lives++;
+            updateLives();
+        } else if (p.type === 'yellow') {
+            player.damageMultiplier = 2;
+            setTimeout(() => { player.damageMultiplier = 1; }, 5000);
+        }
+    }
+
+    // Enemigos
+    function updateEnemies() {
+        for (let enemy of enemies) {
+            if (!enemy.alive) continue;
+            enemy.x += enemy.velocityX;
+            if (enemy.x <= enemy.minX || enemy.x + enemy.width >= enemy.maxX) enemy.velocityX *= -1;
+            if (checkCollision(player, enemy)) {
+                if (!player.immune) loseLife();
+            }
+        }
+    }
+
+    // proyectiles
+    function updateProjectiles() {
+        for (let i = projectiles.length - 1; i >= 0; i--) {
+            const proj = projectiles[i];
+            proj.x += proj.velocityX;
+            proj.y += proj.velocityY;
+
+            if (proj.x < -20 || proj.x > canvas.width+20 || proj.y < -20 || proj.y > canvas.height+20) {
+                projectiles.splice(i,1); continue;
+            }
+
+            let hitPlatform = false;
+            for (let platform of platforms) {
+                if (checkCollision(proj, platform)) {
+                    projectiles.splice(i,1); hitPlatform = true; break;
+                }
+            }
+            if (hitPlatform) continue;
+
+            if (level === 1) {
+                for (let enemy of enemies) {
+                    if (enemy.alive && checkCollision(proj, enemy)) {
+                        enemy.alive = false;
+                        projectiles.splice(i,1);
+                        score += 100 * (player.damageMultiplier || 1);
+                        updateScore();
+                        break;
+                    }
+                }
+            }
+
+            if (level === 2 && boss && i < projectiles.length && checkCollision(projectiles[i], boss)) {
+                // daño respeta multiplicador
+                boss.health -= (player.damageMultiplier || 1);
+                projectiles.splice(i,1);
+                score += 50 * (player.damageMultiplier || 1);
+                updateScore();
+
+                if (boss.health === 20) bossPhase = 2;
+                if (boss.health <= 0) victory();
+            }
+        }
+    }
+
+    // Boss
+    function updateBoss() {
+        if (!boss) return;
+        boss.x += boss.velocityX;
+        if (boss.x <= boss.minX || boss.x + boss.width >= boss.maxX) boss.velocityX *= -1;
+        boss.shootTimer++;
+        if (bossPhase === 1 && boss.shootTimer >= boss.shootCooldown) { boss.shootTimer = 0; shootBossParabola(); }
+        if (bossPhase === 2 && boss.shootTimer >= boss.shootCooldown - 20) { boss.shootTimer = 0; dropBossBag(); }
+
+        for (let i = bossProjectiles.length - 1; i >= 0; i--) {
+            const proj = bossProjectiles[i];
+            proj.x += proj.velocityX;
+            proj.y += proj.velocityY;
+            proj.velocityY += 0.4;
+            if (proj.y > canvas.height) { bossProjectiles.splice(i,1); continue; }
+
+            let hitPlatform = false;
+            for (let platform of platforms) {
+                if (checkCollision(proj, platform)) { bossProjectiles.splice(i,1); hitPlatform = true; break; }
+            }
+            if (hitPlatform) continue;
+
+            if (i < bossProjectiles.length && checkCollision(player, bossProjectiles[i])) {
+                if (!player.immune) loseLife();
+                bossProjectiles.splice(i,1);
+            }
+        }
+    }
+
+    function shootBossParabola() {
+        const bossX = boss.x + boss.width/2;
+        const bossY = boss.y + boss.height;
+        const dx = (player.x + player.width/2) - bossX;
+        const dy = (player.y + player.height/2) - bossY;
+        const angle = Math.atan2(dy, dx);
+        const speed = 8;
+        bossProjectiles.push({
+            x: bossX - 8, y: bossY,
+            width: 16, height: 16,
+            velocityX: Math.cos(angle)*speed,
+            velocityY: Math.sin(angle)*speed*0.5,
+            type: 'parabola'
+        });
+    }
+
+    function dropBossBag() {
+        const bossX = boss.x + boss.width/2;
+        const bossY = boss.y + boss.height;
+        bossProjectiles.push({
+            x: bossX - 10, y: bossY,
+            width: 20, height: 25,
+            velocityX: (Math.random()-0.5)*3, velocityY: 0, type: 'bag'
+        });
+    }
+
+    // Colisión AABB
+    function checkCollision(r1, r2) {
+        return r1.x < r2.x + r2.width &&
+               r1.x + r1.width > r2.x &&
+               r1.y < r2.y + r2.height &&
+               r1.y + r1.height > r2.y;
+    }
+
+    function loseLife() {
+        lives--;
+        updateLives();
+        if (lives <= 0) {
+            gameOver();
+        } else {
+            player.x = 300; player.y = 800; player.velocityX = 0; player.velocityY = 0;
+        }
+    }
+
+    function updateScore() {
+        document.getElementById('score').textContent = score;
+        if (score > highScore) {
+            highScore = score;
+            localStorage.setItem('macehualli_highscore', highScore);
+        }
+    }
+
+    function updateLives() {
+        const heartsContainer = document.getElementById('hearts');
+        heartsContainer.innerHTML = '';
+        for (let i=0;i<lives;i++) heartsContainer.innerHTML += '<div class="heart"></div>';
+    }
+
+    // Transición de nivel
+    function startLevelTransition() {
+        gameState = GAME_STATES.TRANSITION;
+        transitionTimer = 120;
+    }
+
+    function loadLevel2() {
+        level = 2;
+        document.getElementById('levelNum').textContent = '2';
+        enemies = [];
+        orb.collected = false;
+
+        boss = {
+            x: 400, y: 80, width:64, height:64,
+            health: 40, maxHealth: 40,
+            shootTimer: 0, shootCooldown: 60,
+            velocityX: 2, minX: 50, maxX: 526
+        };
+        bossPhase = 1;
+        bossProjectiles = [];
+
+        // spawnear corazon rojo y poder amarillo en nivel 2
+        powerUps = [];
+        powerUps.push({ x: 120, y: 360, width: 24, height: 24, type: 'red', pulse: 0 });
+        powerUps.push({ x: 420, y: 240, width: 24, height: 24, type: 'yellow', pulse: 0 });
+
+        player.x = 300; player.y = 850; player.velocityX = 0; player.velocityY = 0;
+    }
+
+    function gameOver() {
+        saveScorePrompt();
+        gameState = GAME_STATES.GAME_OVER;
+        document.getElementById('hud').classList.remove('active');
+    }
+
+    function victory() {
+        saveScorePrompt();
+        gameState = GAME_STATES.VICTORY;
+        document.getElementById('hud').classList.remove('active');
+    }
+
+    // Guardar scores
+    function saveScorePrompt() {
+        try {
+            const name = prompt('Ingresa tu nombre para guardar el score (o deja vacío):', '') || 'Anon';
+            const scores = JSON.parse(localStorage.getItem('macehualli_scores')) || [];
+            scores.push({ name: name, score: score, date: (new Date()).toISOString() });
+            localStorage.setItem('macehualli_scores', JSON.stringify(scores));
+        } catch (e) {
+            console.error('No se pudo guardar score', e);
+        }
+    }
+
+    // DIBUJO
+    function drawBackground() {
+        ctx.fillStyle = '#87CEEB';
+        ctx.fillRect(0,0,canvas.width,canvas.height);
+        ctx.fillStyle = 'rgba(255,255,255,0.7)';
+        ctx.fillRect(100,100,80,30);
+        ctx.fillRect(110,90,60,20);
+        ctx.fillRect(400,200,100,35);
+        ctx.fillRect(410,190,80,20);
+        ctx.fillRect(200,500,90,30);
+        ctx.fillRect(210,490,70,20);
+    }
+
+    function drawPlatforms() {
+        for (let platform of platforms) {
+            ctx.fillStyle = platform.color;
+            ctx.fillRect(platform.x, platform.y, platform.width, platform.height);
+            ctx.fillStyle = platform.color === '#2ECC71' ? '#27AE60' : '#654321';
+            ctx.fillRect(platform.x, platform.y, platform.width, 3);
+        }
+    }
+
+    function drawPlayer() {
+        // aura por inmunidad
+        if (player.immune) {
+            ctx.beginPath();
+            ctx.fillStyle = 'rgba(0,180,255,0.25)';
+            ctx.fillRect(player.x-6, player.y-6, player.width+12, player.height+12);
+            ctx.closePath();
+        }
+        // aura por daño x2
+        if (player.damageMultiplier > 1) {
+            ctx.beginPath();
+            ctx.fillStyle = 'rgba(255,215,0,0.18)';
+            ctx.fillRect(player.x-6, player.y-6, player.width+12, player.height+12);
+            ctx.closePath();
+        }
+
+        ctx.fillStyle = '#27AE60';
+        ctx.fillRect(player.x, player.y + 20, player.width, 44);
+
+        ctx.fillStyle = '#F39C12';
+        ctx.fillRect(player.x + 4, player.y, 24, 24);
+
+        ctx.fillStyle = '#000';
+        ctx.fillRect(player.x + 8, player.y + 8, 4, 4);
+        ctx.fillRect(player.x + 18, player.y + 8, 4, 4);
+
+        ctx.fillStyle = '#F39C12';
+        ctx.fillRect(player.x - 4, player.y + 30, 6, 20);
+        ctx.fillRect(player.x + player.width - 2, player.y + 30, 6, 20);
+
+        ctx.strokeStyle = 'rgba(231,76,60,0.4)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5,5]);
+        ctx.beginPath();
+        const centerX = player.x + player.width/2;
+        const centerY = player.y + player.height/2;
+        ctx.moveTo(centerX, centerY);
+        ctx.lineTo(mouseX, mouseY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+
+    function drawEnemies() {
+        if (level !== 1) return;
+        for (let enemy of enemies) {
+            if (!enemy.alive) continue;
+            ctx.fillStyle = '#C0392B';
+            ctx.fillRect(enemy.x, enemy.y, enemy.width, enemy.height);
+            ctx.fillStyle = '#E74C3C';
+            ctx.fillRect(enemy.x + 3, enemy.y + 3, enemy.width - 6, enemy.height - 6);
+            ctx.fillStyle = '#000';
+            ctx.fillRect(enemy.x + 6, enemy.y + 8, 3, 3);
+            ctx.fillRect(enemy.x + 15, enemy.y + 8, 3, 3);
+            ctx.fillRect(enemy.x + 6, enemy.y + 18, 12, 2);
+        }
+    }
+
+    function drawOrb() {
+        if (level !== 1 || orb.collected) return;
+        orb.pulseTimer += 0.1;
+        const pulse = Math.sin(orb.pulseTimer) * 0.2 + 1;
+        ctx.fillStyle = 'rgba(212,175,55,0.3)';
+        const glowSize = orb.width * pulse * 1.5;
+        ctx.fillRect(orb.x - (glowSize - orb.width)/2, orb.y - (glowSize - orb.height)/2, glowSize, glowSize);
+        ctx.fillStyle = '#FFD700';
+        const orbSize = orb.width * pulse;
+        ctx.fillRect(orb.x - (orbSize - orb.width)/2, orb.y - (orbSize - orb.height)/2, orbSize, orbSize);
+        ctx.fillStyle = '#FFF8DC';
+        const coreSize = orb.width * 0.6;
+        ctx.fillRect(orb.x + (orb.width - coreSize)/2, orb.y + (orb.height - coreSize)/2, coreSize, coreSize);
+        for (let i=0;i<3;i++) {
+            const angle = orb.pulseTimer*2 + (i * Math.PI * 2 / 3);
+            const distance = 20;
+            const px = orb.x + orb.width/2 + Math.cos(angle)*distance;
+            const py = orb.y + orb.height/2 + Math.sin(angle)*distance;
+            ctx.fillStyle = 'rgba(255,215,0,0.6)';
+            ctx.fillRect(px-2, py-2, 4, 4);
+        }
+    }
+
+    function drawProjectiles() {
+        for (let proj of projectiles) {
+            ctx.fillStyle = '#2ECC71';
+            ctx.fillRect(proj.x, proj.y, proj.width, proj.height);
+            ctx.fillStyle = '#27AE60';
+            ctx.fillRect(proj.x+2, proj.y+2, proj.width-4, proj.height-4);
+            ctx.fillStyle = '#8B4513';
+            ctx.fillRect(proj.x+4, proj.y+4, 4, 4);
+        }
+    }
+
+    function drawBoss() {
+        if (!boss) return;
+        ctx.fillStyle = '#8E44AD';
+        ctx.fillRect(boss.x, boss.y, boss.width, boss.height);
+        ctx.fillStyle = '#9B59B6';
+        ctx.fillRect(boss.x+8, boss.y+8, boss.width-16, boss.height-16);
+        ctx.fillStyle = '#E74C3C';
+        ctx.fillRect(boss.x+16, boss.y+20, 10, 10);
+        ctx.fillRect(boss.x+38, boss.y+20, 10, 10);
+        ctx.fillStyle = '#000';
+        ctx.fillRect(boss.x+16, boss.y+45, 32, 6);
+
+        const barWidth = 200, barHeight = 20;
+        const barX = canvas.width/2 - barWidth/2, barY = 100;
+        ctx.strokeStyle = '#ECF0F1'; ctx.lineWidth = 3;
+        ctx.strokeRect(barX, barY, barWidth, barHeight);
+        const healthPercent = boss.health / boss.maxHealth;
+        ctx.fillStyle = healthPercent > 0.5 ? '#E74C3C' : '#C0392B';
+        ctx.fillRect(barX + 2, barY + 2, (barWidth - 4) * Math.max(0, healthPercent), barHeight - 4);
+        ctx.fillStyle = '#ECF0F1';
+        ctx.font = 'bold 14px Courier'; ctx.textAlign = 'center';
+        ctx.fillText('BOSS', barX + barWidth/2, barY - 10);
+        ctx.fillText(Math.max(0, Math.ceil(boss.health)) + '/' + boss.maxHealth, barX + barWidth/2, barY + 15);
+    }
+
+    function drawBossProjectiles() {
+        for (let proj of bossProjectiles) {
+            if (proj.type === 'parabola') {
+                ctx.fillStyle = '#95A5A6';
+                ctx.fillRect(proj.x, proj.y, proj.width, proj.height);
+                ctx.fillStyle = '#7F8C8D';
+                ctx.fillRect(proj.x+3, proj.y+3, proj.width-6, proj.height-6);
+            } else if (proj.type === 'bag') {
+                ctx.fillStyle = '#34495E';
+                ctx.fillRect(proj.x, proj.y, proj.width, proj.height);
+                ctx.fillStyle = '#2C3E50';
+                ctx.fillRect(proj.x+3, proj.y+3, proj.width-6, proj.height-6);
+            }
+        }
+    }
+
+    // dibujar powerups
+    function drawPowerUps() {
+        for (let p of powerUps) {
+            p.pulse = (p.pulse || 0) + 0.08;
+            const pulse = 1 + Math.sin(p.pulse) * 0.12;
+            if (p.type === 'blue') {
+                ctx.fillStyle = '#00BFFF';
+                ctx.fillRect(p.x, p.y, p.width * pulse, p.height * pulse);
+                ctx.fillStyle = '#E0F7FF';
+                ctx.fillRect(p.x + 4, p.y + 4, p.width * pulse - 8, p.height * pulse - 8);
+            } else if (p.type === 'red') {
+                ctx.fillStyle = '#FF3333';
+                ctx.fillRect(p.x, p.y, p.width * pulse, p.height * pulse);
+                ctx.fillStyle = '#FF6666';
+                ctx.fillRect(p.x + 4, p.y + 4, p.width * pulse - 8, p.height * pulse - 8);
+            } else if (p.type === 'yellow') {
+                ctx.fillStyle = '#FFD700';
+                ctx.fillRect(p.x, p.y, p.width * pulse, p.height * pulse);
+                ctx.fillStyle = '#FFF2B2';
+                ctx.fillRect(p.x + 4, p.y + 4, p.width * pulse - 8, p.height * pulse - 8);
+            }
+        }
+    }
+
+    // Botones dibujables en canvas
+    function drawButton(btn) {
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.fillRect(btn.x + 4, btn.y + 4, btn.width, btn.height);
+
+        const gradient = ctx.createLinearGradient(btn.x, btn.y, btn.x, btn.y + btn.height);
+        gradient.addColorStop(0, '#f4d03f'); gradient.addColorStop(1, '#d4af37');
+        ctx.fillStyle = gradient;
+        ctx.fillRect(btn.x, btn.y, btn.width, btn.height);
+
+        ctx.strokeStyle = '#1a1a2e'; ctx.lineWidth = 3;
+        ctx.strokeRect(btn.x, btn.y, btn.width, btn.height);
+
+        ctx.fillStyle = '#1a1a2e';
+        ctx.font = 'bold 20px Courier';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(btn.text, btn.x + btn.width/2, btn.y + btn.height/2);
+    }
+
+    // Menú
+    function drawMenu() {
+        drawBackground();
+        ctx.fillStyle = '#D4AF37';
+        ctx.font = 'bold 64px Courier';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('MACEHUALLI', canvas.width/2, canvas.height/2 - 200);
+
+        ctx.fillStyle = '#ECF0F1'; ctx.font = 'bold 24px Courier';
+        ctx.fillText('La Rebelión', canvas.width/2, canvas.height/2 - 140);
+
+        ctx.font = '16px Courier'; ctx.fillStyle = '#95A5A6';
+        ctx.fillText('Escala las plataformas y alcanza el orbe', canvas.width/2, canvas.height/2 - 80);
+        ctx.fillText('Derrota al jefe final para la victoria', canvas.width/2, canvas.height/2 - 55);
+
+        ctx.fillStyle = '#D4AF37'; ctx.font = 'bold 28px Courier';
+        ctx.fillText('RÉCORD: ' + highScore, canvas.width/2, canvas.height/2 - 10);
+
+        for (let btn of menuButtons) drawButton(btn);
+
+        ctx.fillStyle = '#7F8C8D'; ctx.font = '14px Courier';
+        ctx.fillText('WASD - Mover  |  ESPACIO - Saltar  |  CLICK - Disparar', canvas.width/2, canvas.height - 50);
+    }
+
+    // Draw scores screen
+    function drawScores() {
+        drawBackground();
+        ctx.fillStyle = '#D4AF37'; ctx.font = 'bold 48px Courier';
+        ctx.textAlign = 'center'; ctx.fillText('SCORES', canvas.width/2, 90);
+
+        const scores = JSON.parse(localStorage.getItem('macehualli_scores')) || [];
+        ctx.fillStyle = '#ECF0F1'; ctx.font = '16px Courier'; ctx.textAlign = 'left';
+
+        const startX = canvas.width/2 - 200;
+        let y = 150;
+        if (scores.length === 0) {
+            ctx.fillStyle = '#95A5A6'; ctx.fillText('No hay scores aún', canvas.width/2 - 50, y);
+        } else {
+            // ordenar por score desc
+            scores.sort((a,b) => b.score - a.score);
+            const list = scores.slice(0, 10); // top 10
+            ctx.fillStyle = '#ECF0F1';
+            for (let i=0;i<list.length;i++) {
+                const s = list[i];
+                ctx.fillText(`${i+1}. ${s.name} — ${s.score} — ${new Date(s.date).toLocaleString()}`, startX, y);
+                y += 30;
+            }
+        }
+
+        for (let btn of scoresButtons) drawButton(btn);
+    }
+
+    // Game over
+    function drawGameOver() {
+        ctx.fillStyle = 'rgba(0,0,0,0.85)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+        ctx.fillStyle = '#E74C3C'; ctx.font = 'bold 48px Courier'; ctx.textAlign = 'center';
+        ctx.fillText('¡OH NO!', canvas.width/2, canvas.height/2 - 100);
+
+        ctx.fillStyle = '#ECF0F1'; ctx.font = 'bold 28px Courier';
+        ctx.fillText('Jairo Bot', canvas.width/2, canvas.height/2 - 30);
+        ctx.fillText('te quitó el cuerito', canvas.width/2, canvas.height/2 + 10);
+
+        ctx.fillStyle = '#D4AF37'; ctx.font = 'bold 24px Courier';
+        ctx.fillText('Puntuación: ' + score, canvas.width/2, canvas.height/2 + 80);
+
+        if (score === highScore && score > 0) {
+            ctx.fillStyle = '#F39C12'; ctx.font = 'bold 20px Courier';
+            ctx.fillText('¡NUEVO RÉCORD!', canvas.width/2, canvas.height/2 + 110);
+        }
+
+        for (let btn of gameOverButtons) drawButton(btn);
+    }
+
+    // Victory
+    function drawVictory() {
+        ctx.fillStyle = 'rgba(0,0,0,0.85)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+        ctx.fillStyle = '#D4AF37'; ctx.font = 'bold 56px Courier'; ctx.textAlign = 'center';
+        ctx.fillText('¡VICTORIA!', canvas.width/2, canvas.height/2 - 80);
+
+        ctx.fillStyle = '#ECF0F1'; ctx.font = 'bold 28px Courier';
+        ctx.fillText('¡Derrotaste al opresor!', canvas.width/2, canvas.height/2 - 20);
+
+        ctx.fillStyle = '#2ECC71'; ctx.font = 'bold 24px Courier';
+        ctx.fillText('Puntuación Final: ' + score, canvas.width/2, canvas.height/2 + 40);
+
+        if (score === highScore) {
+            ctx.fillStyle = '#F39C12'; ctx.font = 'bold 20px Courier';
+            ctx.fillText('¡NUEVO RÉCORD!', canvas.width/2, canvas.height/2 + 80);
+        }
+
+        for (let btn of gameOverButtons) drawButton(btn);
+    }
+
+    function drawTransition() {
+        ctx.fillStyle = '#87CEEB'; ctx.fillRect(0,0,canvas.width,canvas.height);
+        ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+        ctx.fillStyle = '#D4AF37'; ctx.font = 'bold 48px Courier'; ctx.textAlign = 'center';
+        ctx.fillText('¡NIVEL COMPLETADO!', canvas.width/2, canvas.height/2 - 40);
+        ctx.fillStyle = '#ECF0F1'; ctx.font = 'bold 32px Courier';
+        ctx.fillText('Preparándose para el Boss...', canvas.width/2, canvas.height/2 + 40);
+    }
+
+    // Loop principal
+    function gameLoop() {
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+
+        if (gameState === GAME_STATES.MENU) {
+            drawMenu();
+        } else if (gameState === GAME_STATES.SCORES) {
+            drawScores();
+        } else if (gameState === GAME_STATES.PLAYING) {
+            drawBackground();
+            drawPlatforms();
+            drawOrb();
+            drawEnemies();
+            if (level === 2) { drawBoss(); drawBossProjectiles(); }
+            drawPowerUps();
+            drawProjectiles();
+            drawPlayer();
+
+            updatePlayer();
+            updateEnemies();
+            updateProjectiles();
+            if (level === 2) updateBoss();
+        } else if (gameState === GAME_STATES.TRANSITION) {
+            drawTransition();
+            transitionTimer--;
+            if (transitionTimer <= 0) { gameState = GAME_STATES.PLAYING; loadLevel2(); }
+        } else if (gameState === GAME_STATES.GAME_OVER) {
+            drawGameOver();
+        } else if (gameState === GAME_STATES.VICTORY) {
+            drawVictory();
+        }
+
+        requestAnimationFrame(gameLoop);
+    }
+
+    // Inicializar
+    initMenuButtons();
+    initGameOverButtons();
+    initScoresButtons();
+    resetGame();
+    console.log('MACEHUALLI - Juego iniciado (con power-ups y scores)');
+    gameLoop();
+    </script>
+</body>
+</html>
